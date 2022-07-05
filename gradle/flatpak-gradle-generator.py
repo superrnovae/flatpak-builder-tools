@@ -16,24 +16,11 @@ arches = {
         'linux-aarch_32': 'arm'
 }
 
-async def get_remote_sha256(url):
-    logging.info(f"started sha256({url})")
-    sha256 = hashlib.sha256()
-    async with aiohttp.ClientSession(raise_for_status=True) as http_session:
-        async with http_session.get(url) as response:
-            while True:
-                data = await response.content.read(4096)
-                if not data:
-                    break
-                sha256.update(data)
-    logging.info(f"done sha256({url})")
-    return sha256.hexdigest()
-
-async def parse_url(url, destdir, arch=None):
+async def assemble(url, sha256, destdir, arch=None):
     ret = [{ 'type': 'file',
             'url': url,
-            'sha256': await get_remote_sha256(url),
-            'dest': destdir, }]
+            'sha256': sha256.hexdigest(),
+            'dest': destdir + '/' + "/".join(url.split("/")[4:-1])}]
     if arch:
         ret[0]['only-arches'] = [arch]
     return ret
@@ -49,9 +36,23 @@ def arch_for_url(url, urls_arch):
 async def parse_urls(urls, urls_arch, destdir):
     sources = []
     sha_coros = []
+    sha256 = hashlib.sha256()
+
     for url in urls:
+        async with aiohttp.ClientSession(raise_for_status=False) as http_session:
+                async with http_session.get(url) as response:
+                    if response.status != 200:
+                        continue
+                    else:
+                        while True:
+                            data = await response.content.read(4096)
+                            if not data:
+                                break
+                            sha256.update(data)
+
         arch = arch_for_url(url, urls_arch)
-        sha_coros.append(parse_url(str(url), destdir, arch))
+        sha_coros.append(assemble(str(url), sha256, destdir, arch))
+
     sources.extend(sum(await asyncio.gather(*sha_coros), []))
     return sources
 
@@ -85,7 +86,7 @@ def main():
         for lines in f:
             res = r.findall(lines)
             for url in res:
-                if url.endswith('.jar'):
+                if url.endswith('.jar') or url.endswith('.pom') or url.endswith('.module'):
                     urls.append(url)
                 elif url.endswith('.exe'):
                     for host in req_gradle_arches:
