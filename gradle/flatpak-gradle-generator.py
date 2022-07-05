@@ -16,10 +16,10 @@ arches = {
         'linux-aarch_32': 'arm'
 }
 
-async def assemble(url, sha256, destdir, arch=None):
+def assemble(url, sha256, destdir, arch=None):
     ret = [{ 'type': 'file',
             'url': url,
-            'sha256': sha256.hexdigest(),
+            'sha256': sha256,
             'dest': destdir + '/' + "/".join(url.split("/")[4:-1])}]
     if arch:
         ret[0]['only-arches'] = [arch]
@@ -49,10 +49,8 @@ async def parse_urls(urls, urls_arch, destdir):
                             if not data:
                                 break
                             sha256.update(data)
-
-        arch = arch_for_url(url, urls_arch)
-        sha_coros.append(assemble(str(url), sha256, destdir, arch))
-
+                        arch = arch_for_url(url, urls_arch)
+                        sha_coros.append(assemble(str(url), sha256.hexdigest(), destdir, arch))
     sources.extend(sum(await asyncio.gather(*sha_coros), []))
     return sources
 
