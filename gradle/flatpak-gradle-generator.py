@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 __license__ = 'MIT'
+
 import aiohttp
 import argparse
 import asyncio
@@ -9,21 +10,44 @@ import hashlib
 import logging
 import re
 
+from aiohttp import ClientResponseError
+
 arches = {
-        'linux-x86_64': 'x86_64',
-        'linux-x86_32': 'i386',
-        'linux-aarch_64': 'aarch64',
-        'linux-aarch_32': 'arm'
+    'linux-x86_64': 'x86_64',
+    'linux-x86_32': 'i386',
+    'linux-aarch_64': 'aarch64',
+    'linux-aarch_32': 'arm'
 }
 
-def assemble(url, sha256, destdir, arch=None):
-    ret = [{ 'type': 'file',
-            'url': url,
-            'sha256': sha256,
-            'dest': destdir + '/' + "/".join(url.split("/")[4:-1])}]
-    if arch:
-        ret[0]['only-arches'] = [arch]
+
+async def get_remote_sha256(url):
+    logging.info(f"started sha256({url})")
+    sha256 = hashlib.sha256()
+    async with aiohttp.ClientSession(raise_for_status=False) as http_session:
+        async with http_session.get(url) as response:
+            if response.status == 404:
+                return
+            while True:
+                data = await response.content.read(4096)
+                if not data:
+                    break
+                sha256.update(data)
+    logging.info(f"done sha256({url})")
+    return sha256.hexdigest()
+
+
+async def parse_url(url, destdir, arch=None):
+    ret = []
+    res = await get_remote_sha256(url)
+    if res is not None:
+        ret = [{'type': 'file',
+                'url': url,
+                'sha256': res,
+                'dest': destdir + '/' + "/".join(url.split("/")[4:-1]), }]
+        if arch:
+            ret[0]['only-arches'] = [arch]
     return ret
+
 
 def arch_for_url(url, urls_arch):
     arch = None
@@ -33,33 +57,25 @@ def arch_for_url(url, urls_arch):
         pass
     return arch
 
+
 async def parse_urls(urls, urls_arch, destdir):
     sources = []
     sha_coros = []
-    sha256 = hashlib.sha256()
-
     for url in urls:
-        async with aiohttp.ClientSession(raise_for_status=False) as http_session:
-                async with http_session.get(url) as response:
-                    if response.status != 200:
-                        continue
-                    else:
-                        while True:
-                            data = await response.content.read(4096)
-                            if not data:
-                                break
-                            sha256.update(data)
-                        arch = arch_for_url(url, urls_arch)
-                        sha_coros.append(assemble(str(url), sha256.hexdigest(), destdir, arch))
+        arch = arch_for_url(url, urls_arch)
+        sha_coros.append(parse_url(str(url), destdir, arch))
     sources.extend(sum(await asyncio.gather(*sha_coros), []))
     return sources
+
 
 def gradle_arch_to_flatpak_arch(arch):
     return arches[arch]
 
+
 def flatpak_arch_to_gradle_arch(arch):
     rev_arches = dict((v, k) for k, v in arches.items())
     return rev_arches[arch]
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -67,7 +83,7 @@ def main():
     parser.add_argument('output', help='The output JSON sources file')
     parser.add_argument('--destdir',
                         help='The directory the generated sources file will save sources to',
-                        default='dependencies')
+                        default='.m2/repository')
     parser.add_argument('--arches',
                         help='Comma-separated list of architectures the generated sources will be for',
                         default='x86_64,aarch64,i386,arm')
@@ -80,7 +96,7 @@ def main():
     urls = []
     urls_arch = {}
     r = re.compile('https:\/\/[\w/\-?=%.]+\.[\w/\-?=%.]+')
-    with open(args.input,'r') as f:
+    with open(args.input, 'r') as f:
         for lines in f:
             res = r.findall(lines)
             for url in res:
